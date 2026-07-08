@@ -315,6 +315,96 @@ export function createRecipe(): RecipeDefinition {
         return slot.durationMin;
       }
 
+      // ── Valve control ──
+
+      /**
+       * Open a valve for `durMin` minutes, robust across valve types.
+       *
+       * 1. Plain `{ state: "ON" }` first — accepted by every valve, including
+       *    Tuya irrigation timers that reject the `on_time` property (and with
+       *    it the whole command). This guarantees the valve actually opens.
+       * 2. Then `{ state: "ON", on_time }` — valves that support `on_time` also
+       *    arm a hardware auto-off, which survives a Sowel outage. Valves that
+       *    don't support it silently ignore this second command; they are
+       *    already open from step 1. Sent best-effort so its rejection never
+       *    hides a successful open.
+       *
+       * A software off-timer (armCompletion) is the reliable close in all cases.
+       */
+      async function openValve(vId: string, durMin: number): Promise<boolean> {
+        const name = valveName(vId);
+        try {
+          await ctx.equipmentManager.executeOrder(vId, "state", { state: "ON" });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.log(`Erreur ouverture ${name}: ${msg}`, "error");
+          return false;
+        }
+        try {
+          await ctx.equipmentManager.executeOrder(vId, "state", {
+            state: "ON",
+            on_time: durMin * 60,
+          });
+        } catch {
+          // Device without on_time support (or transient): the software
+          // off-timer is the fallback close. The valve is already open.
+        }
+        ctx.log(`${name} ouverte pour ${durMin} min`);
+        return true;
+      }
+
+      async function closeValve(vId: string): Promise<void> {
+        const name = valveName(vId);
+        try {
+          await ctx.equipmentManager.executeOrder(vId, "state", { state: "OFF" });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.log(`Erreur fermeture ${name}: ${msg}`, "error");
+        }
+      }
+
+      function armCompletion(ms: number, slotTime: string): void {
+        if (completionTimer) clearTimeout(completionTimer);
+        completionTimer = setTimeout(() => {
+          void finishWatering(slotTime);
+        }, ms);
+      }
+
+      async function finishWatering(slotTime: string): Promise<void> {
+        completionTimer = null;
+        for (const vId of valveIds) await closeValve(vId);
+        ctx.state.set("status", "idle");
+        ctx.state.set("currentSlot", null);
+        ctx.state.delete("wateringUntil");
+        updateNextSlot();
+        ctx.log(`Arrosage créneau ${slotTime} terminé`);
+      }
+
+      /**
+       * After a Sowel restart, pick up an in-progress watering: if the deadline
+       * is still ahead, re-arm the software close; if it has already passed
+       * (Sowel was down), close the valves now as a safety. Valves are never
+       * re-opened — an interrupted watering is only guaranteed to end, not
+       * restarted (avoids surprise over-watering).
+       */
+      function resumeIfWatering(): void {
+        if (ctx.state.get("status") !== "watering") return;
+        const untilRaw = ctx.state.get("wateringUntil");
+        const slotTime = String(ctx.state.get("currentSlot") ?? "");
+        const until = typeof untilRaw === "string" ? Date.parse(untilRaw) : NaN;
+        const remaining = Number.isFinite(until) ? until - Date.now() : -1;
+        if (remaining > 0) {
+          armCompletion(remaining, slotTime);
+          ctx.log(`Reprise arrosage ${slotTime} — fermeture dans ${Math.ceil(remaining / 60000)} min`);
+        } else {
+          ctx.state.set("status", "idle");
+          ctx.state.set("currentSlot", null);
+          ctx.state.delete("wateringUntil");
+          ctx.log("Reprise après échéance — fermeture des vannes par sécurité");
+          for (const vId of valveIds) void closeValve(vId);
+        }
+      }
+
       // ── Rain check ──
 
       function shouldSkipRain(): { skip: boolean; reason: string } {
@@ -379,38 +469,22 @@ export function createRecipe(): RecipeDefinition {
           return;
         }
 
-        // Open all valves simultaneously
+        // Open all valves
+        const durMs = durMin * 60 * 1000;
         ctx.state.set("status", "watering");
         ctx.state.set("currentSlot", slot.time);
         ctx.state.set("lastSkipReason", null);
+        ctx.state.set("wateringUntil", new Date(Date.now() + durMs).toISOString());
 
         const summary: string[] = [];
         for (const vId of valveIds) {
-          const name = valveName(vId);
-          try {
-            await ctx.equipmentManager.executeOrder(vId, "state", {
-              state: "ON",
-              on_time: durMin * 60,
-            });
-            ctx.log(`${name} ouverte pour ${durMin} min`);
-            summary.push(`${name} ${durMin}min`);
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            ctx.log(`Erreur ouverture ${name}: ${msg}`, "error");
-          }
+          if (await openValve(vId, durMin)) summary.push(`${valveName(vId)} ${durMin}min`);
         }
 
         ctx.log(`Arrosage créneau ${slot.time} — ${summary.join(", ")}`);
 
-        // Schedule completion
-        if (completionTimer) clearTimeout(completionTimer);
-        completionTimer = setTimeout(() => {
-          ctx.state.set("status", "idle");
-          ctx.state.set("currentSlot", null);
-          updateNextSlot();
-          ctx.log(`Arrosage créneau ${slot.time} terminé`);
-          completionTimer = null;
-        }, durMin * 60 * 1000);
+        // Reliable close after the duration (works with or without hardware on_time)
+        armCompletion(durMs, slot.time);
       }
 
       // ── Scheduling ──
@@ -441,8 +515,12 @@ export function createRecipe(): RecipeDefinition {
 
       // ── Initialize ──
 
-      ctx.state.set("status", "idle");
-      ctx.state.set("currentSlot", null);
+      // Resume an in-progress watering across a restart BEFORE resetting state.
+      resumeIfWatering();
+      if (ctx.state.get("status") !== "watering") {
+        ctx.state.set("status", "idle");
+        ctx.state.set("currentSlot", null);
+      }
       ctx.state.set("lastSkipReason", null);
       updateNextSlot();
       scheduleAll();
@@ -458,8 +536,9 @@ export function createRecipe(): RecipeDefinition {
             clearTimeout(completionTimer);
             completionTimer = null;
           }
-          ctx.state.set("status", "idle");
-          ctx.state.set("currentSlot", null);
+          // Intentionally do NOT reset status/currentSlot/wateringUntil here:
+          // that persisted state lets createInstance() resume an in-progress
+          // watering after a plugin reload.
           ctx.log("Recette arrêtée");
         },
       };
