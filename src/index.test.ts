@@ -151,3 +151,147 @@ describe("auto-watering resume after restart", () => {
     expect(h.getState("status")).toBe("idle");
   });
 });
+
+describe("auto-watering day-of-week filtering", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Wednesday, 1 minute before the 14:45 slot.
+    vi.setSystemTime(new Date("2026-07-08T14:44:00"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("custom preset: does not trigger on a day outside the configured list, then triggers on the right day", async () => {
+    const h = makeCtx();
+    const inst = createRecipe().createInstance(
+      { ...baseParams, slot1_daysPreset: "custom", slot1_days: "thu" },
+      h.ctx,
+    );
+
+    // Wednesday 14:45 — Thursday-only slot must stay idle.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.orders.length).toBe(0);
+    expect(h.getState("status")).toBe("idle");
+
+    // Thursday 14:45 — now it should fire.
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    const opens = h.orders.filter((o) => (o.value as { state?: string }).state === "ON");
+    expect(opens.length).toBe(2);
+    expect(h.getState("status")).toBe("watering");
+
+    inst.stop();
+  });
+
+  it("custom preset: triggers normally when today is in the configured days list", async () => {
+    const h = makeCtx();
+    const inst = createRecipe().createInstance(
+      { ...baseParams, slot1_daysPreset: "custom", slot1_days: "mon,wed,fri" },
+      h.ctx,
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const opens = h.orders.filter((o) => (o.value as { state?: string }).state === "ON");
+    expect(opens.length).toBe(2);
+    expect(h.getState("status")).toBe("watering");
+
+    inst.stop();
+  });
+
+  it("weekdays preset triggers on Wednesday", async () => {
+    const h = makeCtx();
+    const inst = createRecipe().createInstance(
+      { ...baseParams, slot1_daysPreset: "weekdays" },
+      h.ctx,
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const opens = h.orders.filter((o) => (o.value as { state?: string }).state === "ON");
+    expect(opens.length).toBe(2);
+    expect(h.getState("status")).toBe("watering");
+
+    inst.stop();
+  });
+
+  it("weekend preset does not trigger on Wednesday, fires on Saturday", async () => {
+    const h = makeCtx();
+    const inst = createRecipe().createInstance(
+      { ...baseParams, slot1_daysPreset: "weekend" },
+      h.ctx,
+    );
+
+    // Wednesday 14:45 — weekend-only slot must stay idle.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.orders.length).toBe(0);
+    expect(h.getState("status")).toBe("idle");
+
+    // Saturday 14:45 (3 days later) — now it should fire.
+    await vi.advanceTimersByTimeAsync(3 * 24 * 60 * 60 * 1000);
+    const opens = h.orders.filter((o) => (o.value as { state?: string }).state === "ON");
+    expect(opens.length).toBe(2);
+    expect(h.getState("status")).toBe("watering");
+
+    inst.stop();
+  });
+
+  it("treats an unset preset as every day (backward compatible)", async () => {
+    const h = makeCtx();
+    const inst = createRecipe().createInstance({ ...baseParams }, h.ctx);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const opens = h.orders.filter((o) => (o.value as { state?: string }).state === "ON");
+    expect(opens.length).toBe(2);
+
+    inst.stop();
+  });
+
+  it("ignores a stale custom days value when the preset isn't custom", async () => {
+    const h = makeCtx();
+    // slot1_days holds leftover garbage, but the preset says "all" — must not throw or restrict.
+    const inst = createRecipe().createInstance(
+      { ...baseParams, slot1_daysPreset: "all", slot1_days: "not-a-real-day" },
+      h.ctx,
+    );
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const opens = h.orders.filter((o) => (o.value as { state?: string }).state === "ON");
+    expect(opens.length).toBe(2);
+
+    inst.stop();
+  });
+});
+
+describe("auto-watering days validation", () => {
+  it("rejects an unknown days preset", () => {
+    const recipe = createRecipe();
+    const h = makeCtx();
+    expect(() =>
+      recipe.validate({ ...baseParams, slot1_daysPreset: "biweekly" }, h.ctx),
+    ).toThrow(/biweekly/);
+  });
+
+  it("ignores an invalid custom days value when the preset isn't custom", () => {
+    const recipe = createRecipe();
+    const h = makeCtx();
+    expect(() =>
+      recipe.validate({ ...baseParams, slot1_daysPreset: "weekdays", slot1_days: "garbage" }, h.ctx),
+    ).not.toThrow();
+  });
+
+  it("rejects an unknown day token in a custom-preset slot", () => {
+    const recipe = createRecipe();
+    const h = makeCtx();
+    expect(() =>
+      recipe.validate({ ...baseParams, slot1_daysPreset: "custom", slot1_days: "mon,foo" }, h.ctx),
+    ).toThrow(/foo/);
+  });
+
+  it("accepts empty custom days and a valid comma/space-separated list", () => {
+    const recipe = createRecipe();
+    const h = makeCtx();
+    expect(() =>
+      recipe.validate({ ...baseParams, slot1_daysPreset: "custom", slot1_days: "" }, h.ctx),
+    ).not.toThrow();
+    expect(() =>
+      recipe.validate({ ...baseParams, slot2_daysPreset: "custom", slot2_days: "mon, wed ,FRI" }, h.ctx),
+    ).not.toThrow();
+  });
+});

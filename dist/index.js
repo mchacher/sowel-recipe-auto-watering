@@ -17,16 +17,70 @@ function parseValveIds(raw) {
         return raw.map(String);
     return [];
 }
-/** Compute ms delay from now to the next occurrence of HH:MM today or tomorrow. */
-function msUntilTime(time) {
+const DAY_TOKENS = {
+    sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+};
+const ALL_DAYS = new Set([0, 1, 2, 3, 4, 5, 6]);
+/**
+ * Parse a comma/space-separated list of day tokens (mon,tue,wed,thu,fri,sat,sun)
+ * into a Set of JS Date#getDay() values. Empty/unset means every day.
+ * Throws on an unknown token.
+ */
+function parseDays(raw) {
+    if (raw === undefined || raw === null || raw === "")
+        return new Set(ALL_DAYS);
+    const tokens = String(raw).toLowerCase().split(/[,\s]+/).filter(Boolean);
+    if (tokens.length === 0)
+        return new Set(ALL_DAYS);
+    const days = new Set();
+    for (const token of tokens) {
+        const day = DAY_TOKENS[token];
+        if (day === undefined) {
+            throw new Error(`Unknown day "${token}" — use mon,tue,wed,thu,fri,sat,sun`);
+        }
+        days.add(day);
+    }
+    return days;
+}
+const DAYS_PRESETS = {
+    all: ALL_DAYS,
+    weekdays: new Set([1, 2, 3, 4, 5]),
+    weekend: new Set([0, 6]),
+    custom: null, // resolved from the slot's free-text days field
+};
+const DAYS_PRESET_OPTIONS = [
+    { value: "all", label: "Every day" },
+    { value: "weekdays", label: "Weekdays (Mon-Fri)" },
+    { value: "weekend", label: "Weekend (Sat-Sun)" },
+    { value: "custom", label: "Custom..." },
+];
+/**
+ * Resolve the allowed days for slot `n` from its preset select (`slotN_daysPreset`)
+ * plus, when the preset is "custom", its free-text days field (`slotN_days`).
+ * Unset preset defaults to "all" (every day — matches the pre-preset behavior).
+ */
+function resolveDays(params, n) {
+    const preset = params[`slot${n}_daysPreset`];
+    const presetKey = preset ? String(preset) : "all";
+    const fixed = DAYS_PRESETS[presetKey];
+    if (fixed)
+        return new Set(fixed);
+    return parseDays(params[`slot${n}_days`]);
+}
+/** Compute ms delay from now to the next occurrence of HH:MM on one of `days`. */
+function msUntilNextOccurrence(time, days) {
     const [h, m] = time.split(":").map(Number);
     const now = new Date();
-    const target = new Date(now);
-    target.setHours(h, m, 0, 0);
-    if (target.getTime() <= now.getTime()) {
-        target.setDate(target.getDate() + 1);
+    for (let offset = 0; offset <= 7; offset++) {
+        const candidate = new Date(now);
+        candidate.setDate(candidate.getDate() + offset);
+        candidate.setHours(h, m, 0, 0);
+        if (candidate.getTime() > now.getTime() && days.has(candidate.getDay())) {
+            return candidate.getTime() - now.getTime();
+        }
     }
-    return target.getTime() - now.getTime();
+    // Unreachable: parseDays() never returns an empty set.
+    return 24 * 60 * 60 * 1000;
 }
 /** Find the soonest scheduled slot. */
 function findNextSlot(slots) {
@@ -35,7 +89,7 @@ function findNextSlot(slots) {
     let best = null;
     let bestMs = Infinity;
     for (const slot of slots) {
-        const ms = msUntilTime(slot.time);
+        const ms = msUntilNextOccurrence(slot.time, slot.days);
         if (ms < bestMs) {
             bestMs = ms;
             best = slot;
@@ -59,18 +113,36 @@ function buildSlots() {
         { id: "slot1_duration", name: "Duration (min)", description: "Duration in minutes",
             type: "number", required: true, defaultValue: 10,
             constraints: { min: 1, max: 120 }, group: "slot1" },
+        { id: "slot1_daysPreset", name: "Days", description: "Days of week this slot runs on",
+            type: "select", required: false, defaultValue: "all", options: DAYS_PRESET_OPTIONS,
+            group: "slot1" },
+        { id: "slot1_days", name: "Custom days", description: "e.g. mon,tue,wed,thu,fri",
+            type: "text", required: false, group: "slot1",
+            hiddenWhen: { slot: "slot1_daysPreset", equals: ["all", "weekdays", "weekend"] } },
         // Slot 2 (optional)
         { id: "slot2_time", name: "Time", description: "Watering time",
             type: "time", required: false, group: "slot2" },
         { id: "slot2_duration", name: "Duration (min)", description: "Duration in minutes",
             type: "number", required: false,
             constraints: { min: 1, max: 120 }, group: "slot2" },
+        { id: "slot2_daysPreset", name: "Days", description: "Days of week this slot runs on",
+            type: "select", required: false, defaultValue: "all", options: DAYS_PRESET_OPTIONS,
+            group: "slot2" },
+        { id: "slot2_days", name: "Custom days", description: "e.g. mon,tue,wed,thu,fri",
+            type: "text", required: false, group: "slot2",
+            hiddenWhen: { slot: "slot2_daysPreset", equals: ["all", "weekdays", "weekend"] } },
         // Slot 3 (optional)
         { id: "slot3_time", name: "Time", description: "Watering time",
             type: "time", required: false, group: "slot3" },
         { id: "slot3_duration", name: "Duration (min)", description: "Duration in minutes",
             type: "number", required: false,
             constraints: { min: 1, max: 120 }, group: "slot3" },
+        { id: "slot3_daysPreset", name: "Days", description: "Days of week this slot runs on",
+            type: "select", required: false, defaultValue: "all", options: DAYS_PRESET_OPTIONS,
+            group: "slot3" },
+        { id: "slot3_days", name: "Custom days", description: "e.g. mon,tue,wed,thu,fri",
+            type: "text", required: false, group: "slot3",
+            hiddenWhen: { slot: "slot3_daysPreset", equals: ["all", "weekdays", "weekend"] } },
         // Weather condition (optional)
         { id: "weatherStation", name: "Weather station",
             description: "Weather equipment to read rain_24h from",
@@ -90,6 +162,12 @@ function buildSlots() {
 // ============================================================
 // i18n
 // ============================================================
+const DAYS_PRESET_OPTIONS_FR = {
+    all: "Tous les jours",
+    weekdays: "Semaine (lun-ven)",
+    weekend: "Week-end (sam-dim)",
+    custom: "Personnalisé...",
+};
 const FR = {
     name: "Arrosage Auto",
     description: "Arrosage programmé avec créneaux horaires et gestion intelligente de la pluie",
@@ -98,10 +176,16 @@ const FR = {
         valves: { name: "Vannes d'arrosage", description: "Vannes à piloter" },
         slot1_time: { name: "Heure", description: "Heure d'arrosage" },
         slot1_duration: { name: "Durée (min)", description: "Durée en minutes" },
+        slot1_daysPreset: { name: "Jours", description: "Jours de la semaine pour ce créneau", options: DAYS_PRESET_OPTIONS_FR },
+        slot1_days: { name: "Jours personnalisés", description: "ex: mon,tue,wed,thu,fri" },
         slot2_time: { name: "Heure", description: "Heure d'arrosage" },
         slot2_duration: { name: "Durée (min)", description: "Durée en minutes" },
+        slot2_daysPreset: { name: "Jours", description: "Jours de la semaine pour ce créneau", options: DAYS_PRESET_OPTIONS_FR },
+        slot2_days: { name: "Jours personnalisés", description: "ex: mon,tue,wed,thu,fri" },
         slot3_time: { name: "Heure", description: "Heure d'arrosage" },
         slot3_duration: { name: "Durée (min)", description: "Durée en minutes" },
+        slot3_daysPreset: { name: "Jours", description: "Jours de la semaine pour ce créneau", options: DAYS_PRESET_OPTIONS_FR },
+        slot3_days: { name: "Jours personnalisés", description: "ex: mon,tue,wed,thu,fri" },
         weatherStation: { name: "Station météo", description: "Pour lire le cumul de pluie 24h" },
         rainThreshold: { name: "Seuil de pluie (mm)", description: "Ne pas arroser si le cumul de pluie sur 24h dépasse ce seuil" },
         forecastThreshold: { name: "Seuil prévision pluie (%)", description: "Ne pas arroser si la probabilité de pluie le lendemain dépasse ce seuil" },
@@ -145,6 +229,26 @@ export function createRecipe() {
             if (params.weatherStation && !params.rainThreshold) {
                 throw new Error("Rain threshold is required when a weather station is selected");
             }
+            // Days: preset must be known; custom days are only validated when selected
+            for (const n of [1, 2, 3]) {
+                const presetRaw = params[`slot${n}_daysPreset`];
+                const preset = presetRaw ? String(presetRaw) : "all";
+                if (!(preset in DAYS_PRESETS)) {
+                    throw new Error(`Slot ${n} days: unknown preset "${preset}"`);
+                }
+                if (preset !== "custom")
+                    continue;
+                const daysRaw = params[`slot${n}_days`];
+                if (daysRaw === undefined || daysRaw === null || daysRaw === "")
+                    continue;
+                try {
+                    parseDays(daysRaw);
+                }
+                catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    throw new Error(`Slot ${n} days: ${msg}`);
+                }
+            }
         },
         createInstance(params, ctx) {
             const valveIds = parseValveIds(params.valves);
@@ -160,6 +264,7 @@ export function createRecipe() {
                     timeSlots.push({
                         time: String(time),
                         durationMin: Math.max(1, Math.min(120, Number(dur) || 10)),
+                        days: resolveDays(params, n),
                     });
                 }
             }
@@ -345,7 +450,7 @@ export function createRecipe() {
                 const existing = triggerTimers.get(slot.time);
                 if (existing)
                     clearTimeout(existing);
-                const delay = msUntilTime(slot.time);
+                const delay = msUntilNextOccurrence(slot.time, slot.days);
                 const timer = setTimeout(() => {
                     triggerSlot(slot).catch((err) => ctx.logger.error({ err, slot: slot.time }, "Trigger failed"));
                     // Reschedule for tomorrow

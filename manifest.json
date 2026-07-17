@@ -2,8 +2,8 @@
   "id": "auto-watering",
   "type": "recipe",
   "name": "Auto Watering",
-  "version": "1.1.0",
-  "description": "Scheduled irrigation with configurable time slots, per-valve durations, and rain-aware skip logic",
+  "version": "1.3.0",
+  "description": "Scheduled irrigation with configurable time slots, per-valve durations, day-of-week filtering (with quick presets), and rain-aware skip logic",
   "icon": "Droplets",
   "repo": "mchacher/sowel-recipe-auto-watering",
   "author": "mchacher",
@@ -17,7 +17,7 @@
   "i18n": {
     "fr": {
       "name": "Arrosage Auto",
-      "description": "Arrosage programmé avec créneaux horaires, durées par vanne et gestion intelligente de la pluie."
+      "description": "Arrosage programmé avec créneaux horaires, durées par vanne, filtrage par jour et gestion intelligente de la pluie."
     }
   },
   "sowelVersion": ">=1.1.0"

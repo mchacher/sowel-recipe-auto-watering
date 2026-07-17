@@ -11,10 +11,20 @@ interface RecipeSlotDef {
     id: string;
     name: string;
     description: string;
-    type: "zone" | "equipment" | "number" | "duration" | "time" | "boolean" | "text" | "data-key";
+    type: "zone" | "equipment" | "number" | "duration" | "time" | "boolean" | "text" | "data-key" | "select";
     required: boolean;
     list?: boolean;
     defaultValue?: unknown;
+    /** For `type: "select"` — the closed list of choices rendered as a dropdown. */
+    options?: {
+        value: string;
+        label: string;
+    }[];
+    /** Hide this slot in the recipe form when a sibling slot's value matches. */
+    hiddenWhen?: {
+        slot: string;
+        equals: string | string[];
+    };
     constraints?: {
         equipmentType?: string | string[];
         min?: number;
@@ -25,6 +35,8 @@ interface RecipeSlotDef {
 interface RecipeSlotI18n {
     name: string;
     description: string;
+    /** Per-language labels for a `select` slot's options, keyed by option value. */
+    options?: Record<string, string>;
 }
 interface RecipeLangPack {
     name: string;
