@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createRecipe } from "./index.js";
+import { createRecipe, parseDays, msUntilTime, findNextSlot } from "./index.js";
 
 // ============================================================
 // Mock RecipeContext harness
@@ -149,5 +149,97 @@ describe("auto-watering resume after restart", () => {
 
     expect(h.orders.some((o) => (o.value as { state?: string }).state === "OFF")).toBe(true);
     expect(h.getState("status")).toBe("idle");
+  });
+});
+
+// ============================================================
+// Weekday helpers (spec 130) — pure functions with an injected `now`
+// ============================================================
+
+describe("weekday helpers", () => {
+  // 2026-07-08 is a Wednesday (getDay() === 3), local time.
+  const wed8am = new Date("2026-07-08T08:00:00");
+
+  it("parseDays maps tokens to getDay() values, ignoring unknowns and case", () => {
+    expect([...parseDays("mon,wed,fri")].sort()).toEqual([1, 3, 5]);
+    expect([...parseDays(["sat", "sun"])].sort()).toEqual([0, 6]);
+    expect(parseDays("").size).toBe(0);
+    expect(parseDays(undefined).size).toBe(0);
+    expect(parseDays([]).size).toBe(0);
+    expect([...parseDays("mon,bogus,SUN")].sort()).toEqual([0, 1]);
+  });
+
+  it("empty days: fires later today when the time is still ahead", () => {
+    expect(msUntilTime("09:00", new Set(), wed8am)).toBe(60 * 60 * 1000);
+  });
+
+  it("empty days: rolls to tomorrow when the time already passed", () => {
+    expect(msUntilTime("07:00", new Set(), wed8am)).toBe(23 * 60 * 60 * 1000);
+  });
+
+  it("all seven days behaves exactly like empty (every day)", () => {
+    const all = new Set([0, 1, 2, 3, 4, 5, 6]);
+    expect(msUntilTime("09:00", all, wed8am)).toBe(60 * 60 * 1000);
+    expect(msUntilTime("07:00", all, wed8am)).toBe(23 * 60 * 60 * 1000);
+  });
+
+  it("today allowed and ahead → fires today", () => {
+    const target = new Date(wed8am.getTime() + msUntilTime("09:00", new Set([3]), wed8am));
+    expect(target.getDate()).toBe(8);
+    expect(target.getHours()).toBe(9);
+  });
+
+  it("today not allowed → next allowed weekday", () => {
+    // Wednesday now, only Thursday allowed.
+    const target = new Date(wed8am.getTime() + msUntilTime("09:00", new Set([4]), wed8am));
+    expect(target.getDay()).toBe(4);
+    expect(target.getDate()).toBe(9);
+    expect(target.getHours()).toBe(9);
+  });
+
+  it("time passed today and only today's weekday allowed → next week", () => {
+    const target = new Date(wed8am.getTime() + msUntilTime("07:00", new Set([3]), wed8am));
+    expect(target.getDay()).toBe(3);
+    expect(target.getDate()).toBe(15);
+    expect(target.getHours()).toBe(7);
+  });
+
+  it("findNextSlot picks the soonest slot across weekday filters", () => {
+    const fri10am = new Date("2026-07-10T10:00:00"); // Friday
+    const slots = [
+      { time: "07:30", durationMin: 5, days: new Set([1, 2, 3, 4, 5]) }, // Mon-Fri (07:30 already passed today)
+      { time: "09:00", durationMin: 5, days: new Set([6, 0]) },          // Sat-Sun → Saturday 09:00 is sooner
+    ];
+    expect(findNextSlot(slots, fri10am)?.time).toBe("09:00");
+  });
+});
+
+// ============================================================
+// Weekday scheduling end-to-end (Romain's case, issue #306)
+// ============================================================
+
+describe("auto-watering weekday scheduling", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("on Wednesday, the school-day slot is skipped and the Wed/weekend slot fires", async () => {
+    // Wednesday 08:00 — after slot1's 07:30, before slot2's 09:00.
+    vi.setSystemTime(new Date("2026-07-08T08:00:00"));
+    const h = makeCtx();
+    const params = {
+      ...baseParams,
+      slot1_time: "07:30", slot1_duration: "5", slot1_days: "mon,tue,thu,fri",
+      slot2_time: "09:00", slot2_duration: "5", slot2_days: "wed,sat,sun",
+    };
+    const inst = createRecipe().createInstance(params, h.ctx);
+
+    // Advance to 09:00. slot1 (07:30, excluded on Wed) must NOT fire; slot2 must.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+    expect(h.getState("status")).toBe("watering");
+    expect(h.getState("currentSlot")).toBe("09:00");
+    expect(h.orders.some((o) => (o.value as { state?: string }).state === "ON")).toBe(true);
+
+    inst.stop();
   });
 });

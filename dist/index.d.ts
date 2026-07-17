@@ -4,17 +4,21 @@
  * Scheduled irrigation with up to 3 time slots, rain-aware skip logic.
  * Uses z2m's "on with timed off" pattern ({state:"ON",on_time:N}).
  *
- * All slots use standard core types (time, duration, equipment, number,
- * boolean) — no custom slot types needed.
+ * Each slot has an optional per-weekday filter (a `select` + `list` slot).
+ * No day selected = every day, so pre-1.2.0 instances behave exactly as before.
  */
 interface RecipeSlotDef {
     id: string;
     name: string;
     description: string;
-    type: "zone" | "equipment" | "number" | "duration" | "time" | "boolean" | "text" | "data-key";
+    type: "zone" | "equipment" | "number" | "duration" | "time" | "boolean" | "text" | "data-key" | "select";
     required: boolean;
     list?: boolean;
     defaultValue?: unknown;
+    options?: {
+        value: string;
+        label: string;
+    }[];
     constraints?: {
         equipmentType?: string | string[];
         min?: number;
@@ -25,6 +29,7 @@ interface RecipeSlotDef {
 interface RecipeSlotI18n {
     name: string;
     description: string;
+    options?: Record<string, string>;
 }
 interface RecipeLangPack {
     name: string;
@@ -106,5 +111,30 @@ interface RecipeContext {
         parseDuration(value: unknown): number;
     };
 }
+interface TimeSlot {
+    time: string;
+    durationMin: number;
+    days: Set<number>;
+}
+/** Options for the per-slot weekday `select` (English fallback labels;
+ *  localized labels come from the recipe i18n `options` map). */
+export declare const WEEKDAY_OPTIONS: {
+    value: string;
+    label: string;
+}[];
+/**
+ * Parse a weekday parameter (comma string "mon,wed" or an array) into a set of
+ * getDay() values. Unknown tokens are ignored. An empty set means "every day".
+ */
+export declare function parseDays(raw: unknown): Set<number>;
+/**
+ * ms delay from `now` to the next occurrence of HH:MM on an allowed weekday.
+ * `days` empty = every day (reduces to the today-or-tomorrow behavior). Scans up
+ * to 8 calendar days so a weekly recurrence is always found. Weekday and hours
+ * are evaluated in the process timezone (Sowel sets TZ=Europe/Paris).
+ */
+export declare function msUntilTime(time: string, days: Set<number>, now?: Date): number;
+/** Find the soonest scheduled slot across their weekday filters. */
+export declare function findNextSlot(slots: TimeSlot[], now?: Date): TimeSlot | null;
 export declare function createRecipe(): RecipeDefinition;
 export {};

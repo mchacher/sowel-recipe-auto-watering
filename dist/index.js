@@ -4,8 +4,8 @@
  * Scheduled irrigation with up to 3 time slots, rain-aware skip logic.
  * Uses z2m's "on with timed off" pattern ({state:"ON",on_time:N}).
  *
- * All slots use standard core types (time, duration, equipment, number,
- * boolean) — no custom slot types needed.
+ * Each slot has an optional per-weekday filter (a `select` + `list` slot).
+ * No day selected = every day, so pre-1.2.0 instances behave exactly as before.
  */
 // ============================================================
 // Helpers
@@ -17,25 +17,69 @@ function parseValveIds(raw) {
         return raw.map(String);
     return [];
 }
-/** Compute ms delay from now to the next occurrence of HH:MM today or tomorrow. */
-function msUntilTime(time) {
-    const [h, m] = time.split(":").map(Number);
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(h, m, 0, 0);
-    if (target.getTime() <= now.getTime()) {
-        target.setDate(target.getDate() + 1);
+// ── Weekdays ──
+/** Day-of-week tokens (Monday-first) → JS Date.getDay() values (0 = Sunday). */
+const DAY_TOKEN_TO_DOW = {
+    mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0,
+};
+/** Options for the per-slot weekday `select` (English fallback labels;
+ *  localized labels come from the recipe i18n `options` map). */
+export const WEEKDAY_OPTIONS = [
+    { value: "mon", label: "Mon" },
+    { value: "tue", label: "Tue" },
+    { value: "wed", label: "Wed" },
+    { value: "thu", label: "Thu" },
+    { value: "fri", label: "Fri" },
+    { value: "sat", label: "Sat" },
+    { value: "sun", label: "Sun" },
+];
+/**
+ * Parse a weekday parameter (comma string "mon,wed" or an array) into a set of
+ * getDay() values. Unknown tokens are ignored. An empty set means "every day".
+ */
+export function parseDays(raw) {
+    const tokens = typeof raw === "string"
+        ? raw.split(",")
+        : Array.isArray(raw)
+            ? raw.map(String)
+            : [];
+    const set = new Set();
+    for (const tok of tokens) {
+        const dow = DAY_TOKEN_TO_DOW[tok.trim().toLowerCase()];
+        if (dow !== undefined)
+            set.add(dow);
     }
-    return target.getTime() - now.getTime();
+    return set;
 }
-/** Find the soonest scheduled slot. */
-function findNextSlot(slots) {
+/**
+ * ms delay from `now` to the next occurrence of HH:MM on an allowed weekday.
+ * `days` empty = every day (reduces to the today-or-tomorrow behavior). Scans up
+ * to 8 calendar days so a weekly recurrence is always found. Weekday and hours
+ * are evaluated in the process timezone (Sowel sets TZ=Europe/Paris).
+ */
+export function msUntilTime(time, days, now = new Date()) {
+    const [h, m] = time.split(":").map(Number);
+    for (let offset = 0; offset <= 7; offset++) {
+        const target = new Date(now);
+        target.setHours(h, m, 0, 0);
+        target.setDate(target.getDate() + offset);
+        if (target.getTime() <= now.getTime())
+            continue;
+        if (days.size === 0 || days.has(target.getDay())) {
+            return target.getTime() - now.getTime();
+        }
+    }
+    // Defensive fallback (unreachable when at least one weekday is allowed): 24h.
+    return 24 * 60 * 60 * 1000;
+}
+/** Find the soonest scheduled slot across their weekday filters. */
+export function findNextSlot(slots, now = new Date()) {
     if (slots.length === 0)
         return null;
     let best = null;
     let bestMs = Infinity;
     for (const slot of slots) {
-        const ms = msUntilTime(slot.time);
+        const ms = msUntilTime(slot.time, slot.days, now);
         if (ms < bestMs) {
             bestMs = ms;
             best = slot;
@@ -59,18 +103,24 @@ function buildSlots() {
         { id: "slot1_duration", name: "Duration (min)", description: "Duration in minutes",
             type: "number", required: true, defaultValue: 10,
             constraints: { min: 1, max: 120 }, group: "slot1" },
+        { id: "slot1_days", name: "Days", description: "Days of week (empty = every day)",
+            type: "select", list: true, required: false, options: WEEKDAY_OPTIONS, group: "slot1" },
         // Slot 2 (optional)
         { id: "slot2_time", name: "Time", description: "Watering time",
             type: "time", required: false, group: "slot2" },
         { id: "slot2_duration", name: "Duration (min)", description: "Duration in minutes",
             type: "number", required: false,
             constraints: { min: 1, max: 120 }, group: "slot2" },
+        { id: "slot2_days", name: "Days", description: "Days of week (empty = every day)",
+            type: "select", list: true, required: false, options: WEEKDAY_OPTIONS, group: "slot2" },
         // Slot 3 (optional)
         { id: "slot3_time", name: "Time", description: "Watering time",
             type: "time", required: false, group: "slot3" },
         { id: "slot3_duration", name: "Duration (min)", description: "Duration in minutes",
             type: "number", required: false,
             constraints: { min: 1, max: 120 }, group: "slot3" },
+        { id: "slot3_days", name: "Days", description: "Days of week (empty = every day)",
+            type: "select", list: true, required: false, options: WEEKDAY_OPTIONS, group: "slot3" },
         // Weather condition (optional)
         { id: "weatherStation", name: "Weather station",
             description: "Weather equipment to read rain_24h from",
@@ -90,6 +140,9 @@ function buildSlots() {
 // ============================================================
 // i18n
 // ============================================================
+const FR_DAY_LABELS = {
+    mon: "Lun", tue: "Mar", wed: "Mer", thu: "Jeu", fri: "Ven", sat: "Sam", sun: "Dim",
+};
 const FR = {
     name: "Arrosage Auto",
     description: "Arrosage programmé avec créneaux horaires et gestion intelligente de la pluie",
@@ -98,10 +151,13 @@ const FR = {
         valves: { name: "Vannes d'arrosage", description: "Vannes à piloter" },
         slot1_time: { name: "Heure", description: "Heure d'arrosage" },
         slot1_duration: { name: "Durée (min)", description: "Durée en minutes" },
+        slot1_days: { name: "Jours", description: "Jours de la semaine (vide = tous les jours)", options: FR_DAY_LABELS },
         slot2_time: { name: "Heure", description: "Heure d'arrosage" },
         slot2_duration: { name: "Durée (min)", description: "Durée en minutes" },
+        slot2_days: { name: "Jours", description: "Jours de la semaine (vide = tous les jours)", options: FR_DAY_LABELS },
         slot3_time: { name: "Heure", description: "Heure d'arrosage" },
         slot3_duration: { name: "Durée (min)", description: "Durée en minutes" },
+        slot3_days: { name: "Jours", description: "Jours de la semaine (vide = tous les jours)", options: FR_DAY_LABELS },
         weatherStation: { name: "Station météo", description: "Pour lire le cumul de pluie 24h" },
         rainThreshold: { name: "Seuil de pluie (mm)", description: "Ne pas arroser si le cumul de pluie sur 24h dépasse ce seuil" },
         forecastThreshold: { name: "Seuil prévision pluie (%)", description: "Ne pas arroser si la probabilité de pluie le lendemain dépasse ce seuil" },
@@ -160,6 +216,7 @@ export function createRecipe() {
                     timeSlots.push({
                         time: String(time),
                         durationMin: Math.max(1, Math.min(120, Number(dur) || 10)),
+                        days: parseDays(params[`slot${n}_days`]),
                     });
                 }
             }
@@ -345,7 +402,7 @@ export function createRecipe() {
                 const existing = triggerTimers.get(slot.time);
                 if (existing)
                     clearTimeout(existing);
-                const delay = msUntilTime(slot.time);
+                const delay = msUntilTime(slot.time, slot.days);
                 const timer = setTimeout(() => {
                     triggerSlot(slot).catch((err) => ctx.logger.error({ err, slot: slot.time }, "Trigger failed"));
                     // Reschedule for tomorrow
