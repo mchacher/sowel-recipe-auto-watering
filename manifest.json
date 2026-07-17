@@ -2,7 +2,7 @@
   "id": "auto-watering",
   "type": "recipe",
   "name": "Auto Watering",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Scheduled irrigation with configurable time slots, per-valve durations, and rain-aware skip logic",
   "icon": "Droplets",
   "repo": "mchacher/sowel-recipe-auto-watering",
