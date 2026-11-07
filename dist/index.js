@@ -248,7 +248,7 @@ export function createRecipe() {
             async function openValve(vId, durMin) {
                 const name = valveName(vId);
                 try {
-                    await ctx.equipmentManager.executeOrder(vId, "state", { state: "ON" });
+                    await ctx.dispatchOrder(vId, "state", { state: "ON" });
                 }
                 catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
@@ -256,7 +256,7 @@ export function createRecipe() {
                     return false;
                 }
                 try {
-                    await ctx.equipmentManager.executeOrder(vId, "state", {
+                    await ctx.dispatchOrder(vId, "state", {
                         state: "ON",
                         on_time: durMin * 60,
                     });
@@ -271,7 +271,7 @@ export function createRecipe() {
             async function closeValve(vId) {
                 const name = valveName(vId);
                 try {
-                    await ctx.equipmentManager.executeOrder(vId, "state", { state: "OFF" });
+                    await ctx.dispatchOrder(vId, "state", { state: "OFF" });
                 }
                 catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
