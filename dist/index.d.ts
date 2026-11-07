@@ -86,10 +86,6 @@ interface EquipmentManager {
     getById(id: string): Equipment | null;
     getByIdWithDetails(id: string): EquipmentWithDetails | null;
     getAllWithDetails(): EquipmentWithDetails[];
-    executeOrder(equipmentId: string, alias: string, value: unknown): Promise<{
-        success: boolean;
-        error?: string;
-    }>;
 }
 interface RecipeContext {
     eventBus: {
@@ -107,6 +103,10 @@ interface RecipeContext {
     };
     state: RecipeStateStore;
     log: (message: string, level?: "info" | "warn" | "error") => void;
+    dispatchOrder(equipmentId: string, alias: string, value: unknown): Promise<{
+        success: boolean;
+        error?: string;
+    }>;
     helpers: {
         parseDuration(value: unknown): number;
     };

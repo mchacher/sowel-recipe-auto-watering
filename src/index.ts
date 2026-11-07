@@ -98,11 +98,6 @@ interface EquipmentManager {
   getById(id: string): Equipment | null;
   getByIdWithDetails(id: string): EquipmentWithDetails | null;
   getAllWithDetails(): EquipmentWithDetails[];
-  executeOrder(
-    equipmentId: string,
-    alias: string,
-    value: unknown,
-  ): Promise<{ success: boolean; error?: string }>;
 }
 
 interface RecipeContext {
@@ -117,6 +112,13 @@ interface RecipeContext {
   };
   state: RecipeStateStore;
   log: (message: string, level?: "info" | "warn" | "error") => void;
+  // Spec 101 — dispatches an order attributed to this recipe instance, so the
+  // activity feed names the recipe as its source.
+  dispatchOrder(
+    equipmentId: string,
+    alias: string,
+    value: unknown,
+  ): Promise<{ success: boolean; error?: string }>;
   helpers: { parseDuration(value: unknown): number };
 }
 
@@ -395,14 +397,14 @@ export function createRecipe(): RecipeDefinition {
       async function openValve(vId: string, durMin: number): Promise<boolean> {
         const name = valveName(vId);
         try {
-          await ctx.equipmentManager.executeOrder(vId, "state", { state: "ON" });
+          await ctx.dispatchOrder(vId, "state", { state: "ON" });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           ctx.log(`Erreur ouverture ${name}: ${msg}`, "error");
           return false;
         }
         try {
-          await ctx.equipmentManager.executeOrder(vId, "state", {
+          await ctx.dispatchOrder(vId, "state", {
             state: "ON",
             on_time: durMin * 60,
           });
@@ -417,7 +419,7 @@ export function createRecipe(): RecipeDefinition {
       async function closeValve(vId: string): Promise<void> {
         const name = valveName(vId);
         try {
-          await ctx.equipmentManager.executeOrder(vId, "state", { state: "OFF" });
+          await ctx.dispatchOrder(vId, "state", { state: "OFF" });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           ctx.log(`Erreur fermeture ${name}: ${msg}`, "error");

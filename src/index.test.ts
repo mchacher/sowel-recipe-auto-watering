@@ -21,14 +21,14 @@ function makeCtx(opts: { rejectOnTime?: boolean } = {}) {
       getById: (id: string) => ({ id, name: `Vanne ${id}`, type: "water_valve" }),
       getByIdWithDetails: () => null,
       getAllWithDetails: () => [],
-      executeOrder: async (vId: string, alias: string, value: unknown) => {
-        orders.push({ vId, alias, value });
-        // Simulate a Tuya valve that rejects a payload containing `on_time`.
-        if (opts.rejectOnTime && value && typeof value === "object" && "on_time" in (value as object)) {
-          throw new Error("No converter available for 'on_time'");
-        }
-        return { success: true };
-      },
+    },
+    dispatchOrder: async (vId: string, alias: string, value: unknown) => {
+      orders.push({ vId, alias, value });
+      // Simulate a Tuya valve that rejects a payload containing `on_time`.
+      if (opts.rejectOnTime && value && typeof value === "object" && "on_time" in (value as object)) {
+        throw new Error("No converter available for 'on_time'");
+      }
+      return { success: true };
     },
     zoneManager: { getById: () => ({ id: "z", name: "Zone" }) },
     logger: { info() {}, warn() {}, error() {}, debug() {} },
